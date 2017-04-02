@@ -1,0 +1,249 @@
+system('/usr/bin/openssl req -newkey rsa:2048 -days 3650 -x509 -nodes -keyout CA_KEY.pem -out CA_CERT.pem -subj "/C=PL/O=MyOwn Ltd./CN=RootCA"') unless
+  File.exist?('CA_KEY.pem') && File.exist?('CA_CERT.pem')
+
+File.write('CA_CERT.srl', '01') unless File.exist?('CA_CERT.srl')
+
+docker_installation = <<SCRIPT
+yum install -y yum-utils
+yum install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm
+yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+yum-config-manager --enable docker-ce-edge
+yum install -y docker-ce.x86_64
+usermod -aG docker vagrant
+SCRIPT
+
+system_update = <<SCRIPT
+yum update -y
+SCRIPT
+
+setup_certificates = <<SCRIPT
+mkdir -p /etc/systemd/system/docker.service.d/.certs
+cp /vagrant/CA_{CERT,KEY}.pem /etc/systemd/system/docker.service.d/.certs
+cp /vagrant/CA_CERT.srl /etc/systemd/system/docker.service.d/.certs
+cd /etc/systemd/system/docker.service.d/.certs/
+openssl req -nodes -new -keyout $(uname -n)_key.pem -subj "/C=PL/O=MyOwn Ltd./CN=$(uname -n)" | \
+openssl x509 -req -CA CA_CERT.pem -CAkey CA_KEY.pem  -out $(uname -n)_cert.pem
+chmod 700 /etc/systemd/system/docker.service.d/.certs
+chmod 644 /etc/systemd/system/docker.service.d/.certs/*.pem
+chmod 400 /etc/systemd/system/docker.service.d/.certs/*_key.pem
+ln -s /etc/systemd/system/docker.service.d/.certs/CA_CERT.pem /etc/systemd/system/docker.service.d/.certs/ca.pem
+ln -s /etc/systemd/system/docker.service.d/.certs/$(uname -n)_cert.pem /etc/systemd/system/docker.service.d/.certs/cert.pem
+ln -s /etc/systemd/system/docker.service.d/.certs/$(uname -n)_key.pem /etc/systemd/system/docker.service.d/.certs/key.pem
+rm /etc/systemd/system/docker.service.d/.certs/CA_KEY.pem
+cat << EOF > /root/.dockerrc
+export DOCKER_CERT_PATH=/etc/systemd/system/docker.service.d/.certs/
+export DOCKER_TLS_VERIFY=1
+export DOCKER_HOST=tcp://$(uname -n):2376
+EOF
+SCRIPT
+
+setup_systemd = <<SCRIPT
+cat << EOF > /etc/systemd/system/docker.service.d/docker.service.conf
+[Unit]
+After=network.target firewalld.service
+
+[Service]
+Type=notify
+ExecStart=
+ExecStart=/usr/bin/dockerd \
+  --tlsverify  \
+  --tlscacert=/etc/systemd/system/docker.service.d/.certs/CA_CERT.pem \
+  --tlscert=/etc/systemd/system/docker.service.d/.certs/$(uname -n)_cert.pem \
+  --tlskey=/etc/systemd/system/docker.service.d/.certs/$(uname -n)_key.pem \
+  -H=0.0.0.0:2376 \
+  -H=unix:///var/run/docker.sock
+ExecReload=/bin/kill -s HUP $MAINPID
+LimitNOFILE=infinity
+LimitNPROC=infinity
+LimitCORE=infinity
+TasksMax=infinity
+TimeoutStartSec=0
+Delegate=yes
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl daemon-reload
+systemctl enable docker
+systemctl start docker
+SCRIPT
+
+setup_glusterfs = <<SCRIPT
+yum install -y centos-release-gluster
+yum install -y glusterfs glusterfs-cli glusterfs-libs glusterfs-server
+pvcreate /dev/sdb
+vgcreate vg_gluster /dev/sdb
+lvcreate -L 1G -n brick1 vg_gluster
+mkfs.xfs /dev/vg_gluster/brick1
+mkdir -p /bricks/brick1
+mount /dev/vg_gluster/brick1 /bricks/brick1
+grep -q brick1 /etc/fstab || echo "/dev/vg_gluster/brick1  /bricks/brick1    xfs     defaults    0 0" >> /etc/fstab
+systemctl enable glusterd.service
+systemctl start glusterd.service
+mkdir -p /bricks/brick1/brick
+SCRIPT
+
+setup_haproxy = <<SCRIPT
+yum install -y bind-utils haproxy
+cat << EOF > /etc/haproxy/haproxy.cfg
+global
+    maxconn                     10000
+    daemon
+    ssl-server-verify           none
+    tune.ssl.default-dh-param   2048
+
+defaults
+    mode    http
+    log     global
+    option  httplog
+    option  dontlognull
+    option  http-server-close
+    option  forwardfor          except 127.0.0.0/8
+    option  redispatch
+    retries 30
+    timeout http-request        300s
+    timeout queue               1m
+    timeout connect             10s
+    timeout client              1m
+    timeout server              1m
+    timeout http-keep-alive     10s
+    timeout check               10s
+    maxconn 10000
+
+userlist users
+    group all
+    group demo
+    group haproxy
+
+listen stats
+    bind            *:2100
+    mode            http
+    stats           enable
+    maxconn         10
+    timeout client  10s
+    timeout server  10s
+    timeout connect 10s
+    timeout         queue   10s
+    stats           hide-version
+    stats           refresh 30s
+    stats           show-node
+    stats           realm Haproxy\ Statistics
+    stats           uri  /
+    stats           admin if TRUE
+
+frontend www-http
+    bind    *:80
+    stats   enable
+    mode    http
+    option  http-keep-alive
+
+    acl portainer   hdr_end(host)  -i 172.20.21.2
+
+    use_backend     portainer       if portainer
+
+backend portainer
+    stats   enable
+    option  forwardfor
+    option  http-keep-alive
+    server  portainer    172.20.21.11:9000 check
+    server  portainer    172.20.21.12:9000 check
+    server  portainer    172.20.21.13:9000 check
+EOF
+
+systemctl enable haproxy
+systemctl start haproxy
+SCRIPT
+
+proxy = [
+  system_update,
+  setup_haproxy
+]
+
+swarm_manager = [
+  docker_installation,
+  system_update,
+  setup_certificates,
+  setup_systemd,
+  setup_glusterfs
+]
+
+swarm_worker = [
+  docker_installation,
+  system_update,
+  setup_certificates,
+  setup_systemd
+]
+
+mydc = {
+  'haproxy' => {
+    'ip' => '172.20.21.2',
+    'type' => proxy
+  },
+  'manager1' => {
+    'ip' => '172.20.21.11',
+    'type' => swarm_manager,
+    'storage' => [
+      'disk1' => {
+        'size' => '2',
+        'bus' => 'sata'
+      }
+    ]
+  },
+  'manager2' => {
+    'ip' => '172.20.21.12',
+    'type' => swarm_manager,
+    'storage' => [
+      'disk1' => {
+        'size' => '2',
+        'bus' => 'sata'
+      }
+    ]
+  },
+  'manager3' => {
+    'ip' => '172.20.21.13',
+    'type' => swarm_manager,
+    'storage' => [
+      'disk1' => {
+        'size' => '2',
+        'bus' => 'sata'
+      }
+    ]
+  },
+  'node1' => {
+    'ip' => '172.20.21.21',
+    'type' => swarm_worker
+  },
+  'node2' => {
+    'ip' => '172.20.21.22',
+    'type' => swarm_worker
+  }
+}
+
+Vagrant.configure('2') do |config|
+  config.vm.box = 'bento/centos-7.3'
+
+  config.vm.provider :libvirt do |c|
+    c.storage_pool_name = 'vagrant_pool'
+  end
+
+  mydc.each do |k, v|
+    config.vm.define k do |s|
+      s.vm.hostname = k
+      s.vm.network 'private_network', ip: v['ip']
+      v['type'].each { |cmd| s.vm.provision 'shell', inline: cmd }
+      unless v['storage'].nil?
+        s.vm.provider :libvirt do |libvirt|
+          v['storage'].each do |e|
+            e.each do |key, value|
+              libvirt.storage :file,
+                              path: "#{k}_#{key}.qcow2",
+                              size: "#{value['size']}G",
+                              bus: value['bus'].to_s
+            end
+          end
+        end
+      end
+    end
+  end
+end
