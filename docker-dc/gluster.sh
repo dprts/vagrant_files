@@ -35,4 +35,24 @@ if [ "$(uname -n)" == "manager1" ]; then
     --mount type=bind,src=/srv/portainer,dst=/data \
     portainer/portainer \
       -H unix:///var/run/docker.sock
+
+  docker network create --driver overlay --subnet 172.21.0.0/24 consul
+
+  docker service create \
+    --network=consul \
+    --name=consul \
+    -e 'CONSUL_LOCAL_CONFIG={"leave_on_terminate": true, "datacenter": "testDC"}' \
+    -e 'CONSUL_BIND_INTERFACE=eth0' \
+    --mode global \
+    -p 8500:8500 \
+    -p 8600:8600/udp \
+    --mount type=bind,src=/srv/consul/data,dst=/consul/data \
+    --hostname="{{.Service.Name}}-{{.Node.ID}}" \
+    consul agent -server -ui -client=0.0.0.0 \
+    -bootstrap-expect 3 \
+    -retry-join 172.21.0.3 \
+    -retry-join 172.21.0.4 \
+    -retry-join 172.21.0.5 \
+    -retry-interval 5s
+
 fi
