@@ -1,0 +1,38 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+if ARGV[0] == 'up' || ARGV[0] == 'provision'
+  puts "Enter your proxy username:"
+  proxy_username = STDIN.gets.chomp
+  puts "Enter your proxy password and press ENTER when done (echo is disabled)"
+  proxy_password = STDIN.noecho(&:gets).chomp
+ 
+  puts "Enter hostname"
+  hostname = STDIN.gets.chomp
+  
+  puts "Enter new system's username"
+  system_user = STDIN.gets.chomp
+  puts "Enter your system's user password and press ENTER when done (echo is disabled)"
+  system_passwd = STDIN.noecho(&:gets).chomp
+
+  puts "And finally enter root password. Press ENTER when done (echo is disabled)"
+  root_passwd = STDIN.noecho(&:gets).chomp
+end
+
+system_setup = <<-SCRIPT
+useradd -m -G adm,cdrom,sudo,dip,plugdev,lpadmin,sambashare #{system_user}
+echo "#{system_user}:#{system_passwd}" | chpasswd
+echo "root:#{root_passwd}" | chpasswd
+
+cat << EOF >> /home/#{system_user}/.bashrc
+HTTP_PROXY=http://#{proxy_username}:#{proxy_password}@proxy:8080/
+EOF
+SCRIPT
+
+
+Vagrant.configure("2") do |config|
+  config.vm.box = ""
+  config.vm.hostname = (hostname.nil? || hostname.empty?) ? "vagrant-box" : hostname
+
+  config.vm.provision "shell", inline: system_setup
+end

@@ -24,6 +24,7 @@ fi
 
 mkdir -p /srv/portainer || :
 mount -t glusterfs $(uname -n):/glustervol1 /srv/portainer || :
+grep -q portainer /etc/fstab || echo "$(uname -n):/glustervol1   /srv/portainer    glusterfs defaults 0 0" >> /etc/fstab
 
 if [ "$(uname -n)" == "manager1" ]; then
   docker swarm init --advertise-addr $(ip a l dev eth1 | awk '/inet / { split($2, a, "/"); print a[1]}')
