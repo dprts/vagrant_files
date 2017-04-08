@@ -234,16 +234,18 @@ mydc = {
        'disk2' => { 'size' => '2', 'bus' => 'sata' }
     ]
   },
-  'node1' => {
+  'worker1' => {
     'ip' => '172.20.21.21',
     'type' => swarm_worker,
+    'memory' => 1024,
     'storage' => [
        'disk1' => { 'size' => '50', 'bus' => 'sata' }
     ]
   },
-  'node2' => {
+  'worker2' => {
     'ip' => '172.20.21.22',
     'type' => swarm_worker,
+    'memory' => 1024,
     'storage' => [
        'disk1' => { 'size' => '50', 'bus' => 'sata' }
     ]
@@ -251,6 +253,7 @@ mydc = {
 }
 
 Vagrant.configure('2') do |config|
+  config.vm.synced_folder ".", "/vagrant", type: "nfs"
   config.vm.box = 'bento/centos-7.3'
 
   mydc.each do |k, v|
