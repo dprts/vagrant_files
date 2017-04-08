@@ -22,9 +22,13 @@ if [ "$(uname -n)" == "manager1" ]; then
   fi
 fi
 
-mkdir -p /srv/portainer || :
-mount -t glusterfs $(uname -n):/glustervol1 /srv/portainer || :
-grep -q portainer /etc/fstab || echo "$(uname -n):/glustervol1   /srv/portainer    glusterfs defaults 0 0" >> /etc/fstab
+case $(uname -n) in
+  'manager1' | 'manager2' | 'manager3')
+    mkdir -p /srv/portainer || :
+    mount -t glusterfs $(uname -n):/glustervol1 /srv/portainer || :
+    grep -q portainer /etc/fstab || echo "$(uname -n):/glustervol1   /srv/portainer    glusterfs defaults 0 0" >> /etc/fstab
+    ;;
+esac
 
 if [ "$(uname -n)" == "manager1" ]; then
   docker swarm init --advertise-addr $(ip a l dev eth1 | awk '/inet / { split($2, a, "/"); print a[1]}')
@@ -52,6 +56,7 @@ if [ "$(uname -n)" == "manager1" ]; then
     -p 8600:8600/udp \
     --mount type=bind,src=/srv/consul/data,dst=/consul/data \
     --hostname="{{.Service.Name}}-{{.Node.ID}}" \
+    --constraint 'node.role == manager' \
     consul:0.7.5 agent -server -ui -client=0.0.0.0 \
     -bootstrap-expect 3 \
     -retry-join 172.21.0.3 \

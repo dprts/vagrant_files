@@ -12,6 +12,22 @@ yum install -y docker-ce.x86_64
 usermod -aG docker vagrant
 SCRIPT
 
+setup_lvm_docker = <<SCRIPT
+pvcreate /dev/sdb
+vgcreate dockervg /dev/sdb
+lvcreate -W y -n docker-thinpool dockervg -l 1%VG
+lvcreate -W y -n docker-thinpoolmeta dockervg -l 1%VG
+lvconvert -y -Z n -c 512K --thinpool dockervg/docker-thinpool --poolmetadata dockervg/docker-thinpoolmeta
+cat << EOF > /etc/lvm/profile/docker-thinpool.profile
+activation {
+  thin_pool_autoextend_threshold=80
+  thin_pool_autoextend_percent=20
+}
+EOF
+lvchange --metadataprofile docker-thinpool dockervg/docker-thinpool
+lvs -o+seg_monitor
+SCRIPT
+
 system_update = <<SCRIPT
 yum update -y
 SCRIPT
@@ -51,7 +67,11 @@ ExecStart=/usr/bin/dockerd \
   --tlscert=/etc/systemd/system/docker.service.d/.certs/$(uname -n)_cert.pem \
   --tlskey=/etc/systemd/system/docker.service.d/.certs/$(uname -n)_key.pem \
   -H=0.0.0.0:2376 \
-  -H=unix:///var/run/docker.sock
+  -H=unix:///var/run/docker.sock \
+  --storage-driver=devicemapper \
+  --storage-opt=dm.thinpooldev=dockervg-docker--thinpool \
+  --storage-opt=dm.use_deferred_removal=true \
+  --storage-opt=dm.use_deferred_deletion=true
 ExecReload=/bin/kill -s HUP $MAINPID
 LimitNOFILE=infinity
 LimitNPROC=infinity
@@ -72,8 +92,8 @@ SCRIPT
 setup_glusterfs = <<SCRIPT
 yum install -y centos-release-gluster
 yum install -y glusterfs glusterfs-cli glusterfs-libs glusterfs-server
-pvcreate /dev/sdb
-vgcreate vg_gluster /dev/sdb
+pvcreate /dev/sdc
+vgcreate vg_gluster /dev/sdc
 lvcreate -L 1G -n brick1 vg_gluster
 mkfs.xfs /dev/vg_gluster/brick1
 mkdir -p /bricks/brick1
@@ -166,6 +186,7 @@ proxy = [
 
 swarm_manager = [
   docker_installation,
+  setup_lvm_docker,
   system_update,
   setup_certificates,
   setup_systemd,
@@ -175,6 +196,7 @@ swarm_manager = [
 
 swarm_worker = [
   docker_installation,
+  setup_lvm_docker,
   system_update,
   setup_certificates,
   setup_systemd
@@ -188,66 +210,66 @@ mydc = {
   'manager1' => {
     'ip' => '172.20.21.11',
     'type' => swarm_manager,
+    'memory' => 2048,
     'storage' => [
-      'disk1' => {
-        'size' => '2',
-        'bus' => 'sata'
-      }
+       'disk1' => { 'size' => '50', 'bus' => 'sata' },
+       'disk2' => { 'size' => '2', 'bus' => 'sata' }
     ]
   },
   'manager2' => {
     'ip' => '172.20.21.12',
     'type' => swarm_manager,
+    'memory' => 2048,
     'storage' => [
-      'disk1' => {
-        'size' => '2',
-        'bus' => 'sata'
-      }
+       'disk1' => { 'size' => '50', 'bus' => 'sata' },
+       'disk2' => { 'size' => '2', 'bus' => 'sata' }
     ]
   },
   'manager3' => {
     'ip' => '172.20.21.13',
     'type' => swarm_manager,
+    'memory' => 2048,
     'storage' => [
-      'disk1' => {
-        'size' => '2',
-        'bus' => 'sata'
-      }
+       'disk1' => { 'size' => '50', 'bus' => 'sata' },
+       'disk2' => { 'size' => '2', 'bus' => 'sata' }
     ]
   },
   'node1' => {
     'ip' => '172.20.21.21',
-    'type' => swarm_worker
+    'type' => swarm_worker,
+    'storage' => [
+       'disk1' => { 'size' => '50', 'bus' => 'sata' }
+    ]
   },
   'node2' => {
     'ip' => '172.20.21.22',
-    'type' => swarm_worker
+    'type' => swarm_worker,
+    'storage' => [
+       'disk1' => { 'size' => '50', 'bus' => 'sata' }
+    ]
   }
 }
 
 Vagrant.configure('2') do |config|
   config.vm.box = 'bento/centos-7.3'
 
-  config.vm.provider :libvirt do |c|
-    c.storage_pool_name = 'vagrant_pool'
-  end
-
   mydc.each do |k, v|
     config.vm.define k do |s|
       s.vm.hostname = k
       s.vm.network 'private_network', ip: v['ip']
       v['type'].each { |cmd| s.vm.provision 'shell', inline: cmd }
-      unless v['storage'].nil?
-        s.vm.provider :libvirt do |libvirt|
-          v['storage'].each do |e|
-            e.each do |key, value|
-              libvirt.storage :file,
-                              path: "#{k}_#{key}.qcow2",
-                              size: "#{value['size']}G",
-                              bus: value['bus'].to_s
-            end
+      # s.vm.provision 'shell', path: 'gluster.sh'
+      s.vm.provider :libvirt do |libvirt|
+	libvirt.storage_pool_name = 'vagrant_pool'
+	libvirt.memory = v['memory'] || 512
+        v['storage'].each do |e|
+          e.each do |key, value|
+            libvirt.storage :file,
+                            path: "#{k}_#{key}.qcow2",
+                            size: "#{value['size']}G",
+                            bus: value['bus'].to_s
           end
-        end
+        end unless v['storage'].nil?
       end
     end
   end
