@@ -44,7 +44,7 @@ run_vault() {
     --hostname=$(uname -n) \
     --net=host \
     --cap-add=IPC_LOCK \
-    -e "VAULT_LOCAL_CONFIG={\"backend\": {\"consul\": { \"address\": \"${NODE_IP}:8500\", \"path\": \"vault\" }}, \"listener\": {\"tcp\": { \"address\": \"0.0.0.0:8200\", \"tls_disable\": \"1\"}}, \"default_lease_ttl\": \"168h\", \"max_lease_ttl\": \"720h\"}" \
+    -e "VAULT_LOCAL_CONFIG={\"backend\": {\"consul\": { \"address\": \"${NODE_IP}:8500\", \"path\": \"vault\", \"token\": \"95790f9c-3e98-46f5-967e-8f3ffb02194c\" }}, \"listener\": {\"tcp\": { \"address\": \"0.0.0.0:8200\", \"tls_disable\": \"1\"}}, \"default_lease_ttl\": \"168h\", \"max_lease_ttl\": \"720h\"}" \
     vault server
 }
 
@@ -94,7 +94,7 @@ run_consul_as_svc() {
   docker service create \
     --network=consul \
     --name=consul \
-    -e 'CONSUL_LOCAL_CONFIG={"skip_leave_on_interrupt": true, "datacenter": "testDC", "acl_master_token": "95790f9c-3e98-46f5-967e-8f3ffb02194c", "acl_datacenter": "TestDC", "acl_default_policy": "allow", "acl_down_policy": "allow"}' \
+    -e 'CONSUL_LOCAL_CONFIG={"skip_leave_on_interrupt": true, "datacenter": "testDC", "acl_master_token": "95790f9c-3e98-46f5-967e-8f3ffb02194c", "acl_datacenter": "TestDC", "acl_default_policy": "deny", "acl_down_policy": "deny"}' \
     -e 'CONSUL_BIND_INTERFACE=eth0' \
     --mode global \
     -p 8300-8302:8300-8302 \
